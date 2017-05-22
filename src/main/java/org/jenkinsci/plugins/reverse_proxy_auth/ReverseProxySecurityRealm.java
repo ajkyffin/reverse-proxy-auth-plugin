@@ -30,6 +30,7 @@ import groovy.lang.Binding;
 import hudson.Extension;
 import hudson.model.Descriptor;
 import hudson.model.Hudson;
+import hudson.model.UserPropertyDescriptor;
 import hudson.model.User;
 import hudson.security.GroupDetails;
 import hudson.security.UserMayOrMayNotExistException;
@@ -251,6 +252,16 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 	public String retrievedUser;
 
 	/**
+	 * The name of the header which the email has to be extracted from.
+	 */
+	public final String forwardedEmail;
+
+	/**
+	 * The name of the header which the display name has to be extracted from.
+	 */
+	public final String forwardedDisplayName;
+
+	/**
 	 * Header name of the groups field.
 	 */
 	public final String headerGroups;
@@ -273,11 +284,13 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 	public final String customLogOutUrl;
 
 	@DataBoundConstructor
-	public ReverseProxySecurityRealm(String forwardedUser, String headerGroups, String headerGroupsDelimiter, String customLogInUrl, String customLogOutUrl, String server, String rootDN, boolean inhibitInferRootDN,
+	public ReverseProxySecurityRealm(String forwardedUser, String forwardedEmail, String forwardedDisplayName, String headerGroups, String headerGroupsDelimiter, String customLogInUrl, String customLogOutUrl, String server, String rootDN, boolean inhibitInferRootDN,
 			String userSearchBase, String userSearch, String groupSearchBase, String groupSearchFilter, String groupMembershipFilter, String groupNameAttribute, String managerDN, String managerPassword, 
 			Integer updateInterval, boolean disableLdapEmailResolver, String displayNameLdapAttribute, String emailAddressLdapAttribute) {
 
 		this.forwardedUser = fixEmptyAndTrim(forwardedUser);
+		this.forwardedEmail = fixEmptyAndTrim(forwardedEmail);
+		this.forwardedDisplayName = fixEmptyAndTrim(forwardedDisplayName);
 
 		this.headerGroups = headerGroups;
 		if (!StringUtils.isBlank(headerGroupsDelimiter)) {
@@ -510,6 +523,40 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 						}
 
 					} else {
+						// Retrieve user data from the headers
+
+						User user = User.get(userFromHeader);
+						if (user != null) {
+							boolean changed = false;
+
+							String displayName = r.getHeader(forwardedDisplayName);
+							if (isNotNullHeader(displayName) && !displayName.equals(user.getFullName())) {
+								user.setFullName(displayName);
+								changed = true;
+							}
+
+							String email = r.getHeader(forwardedEmail);
+							if (isNotNullHeader(email)) {
+								Mailer.UserProperty emailProp = user.getProperty(Mailer.UserProperty.class);
+								if (emailProp == null || !email.equals(emailProp.getConfiguredAddress())) {
+									try {
+										user.addProperty(new Mailer.UserProperty(email));
+									} catch (IOException e) {
+										throw new IllegalStateException(e);
+									}
+									changed = true;
+								}
+							}
+
+							if (changed) {
+								try {
+									user.save();
+								} catch (IOException e) {
+									throw new IllegalStateException(e);
+								}
+							}
+						}
+
 						String groups = r.getHeader(headerGroups);
 
 						List<GrantedAuthority> localAuthorities = new ArrayList<GrantedAuthority>();
@@ -553,6 +600,10 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 			public void destroy() {
 			}
 		};
+	}
+
+	private static boolean isNotNullHeader(String value) {
+		return value != null && !value.equals("(null)");
 	}
 
 	@Override
